@@ -1,6 +1,6 @@
 import dagster as dg
 import pandas as pd
-from dagster import OpExecutionContext, asset, op, job, In, Out, graph, AssetIn, AssetKey
+from dagster import OpExecutionContext, asset, op, job, In, Out, graph
 
 # Asset inicial que crea un dataframe simple
 @dg.asset(
@@ -16,8 +16,11 @@ def datos_iniciales():
     }
     df = pd.DataFrame(data)
     
-    # Calculamos la suma total
-    suma_total = df['valor'].sum()
+    # Calculamos la suma total y convertimos a int nativo de Python
+    suma_total = int(df['valor'].sum())
+    
+    # Guardamos el DataFrame en un archivo CSV para que puedan acceder los ops
+    df.to_csv("data/datos_iniciales.csv", index=False)
     
     # Devolvemos el resultado con metadatos
     return dg.MaterializeResult(
@@ -25,19 +28,21 @@ def datos_iniciales():
             "row_count": dg.MetadataValue.int(len(df)),
             "preview": dg.MetadataValue.md(df.to_markdown(index=False)),
             "suma_total": dg.MetadataValue.int(suma_total)
-        },
-        value=suma_total  # Este valor será utilizado directamente por el op
+        }
     )
 
-# Op que recibe el valor del asset y lo pasa a las operaciones
+# Operación para leer el valor del asset desde el archivo
 @dg.op(
-    name="obtener_valor_inicial",
-    ins={"asset_valor": In(int)},
+    name="leer_valor_inicial",
     out=Out(int)
 )
-def obtener_valor_inicial(context: OpExecutionContext, asset_valor: int) -> int:
-    context.log.info(f"Valor obtenido del asset: {asset_valor}")
-    return asset_valor
+def leer_valor_inicial(context: OpExecutionContext):
+
+    df = pd.read_csv("data/datos_iniciales.csv")
+    valor = int(df['valor'].sum())
+    context.log.info(f"Valor leído del CSV: {valor}")
+    return valor
+
 
 # Operación que suma diez al valor
 @dg.op(
@@ -87,9 +92,26 @@ def guardar_resultados(
     context.log.info(f"Resultados finales:\n{df_resultados}")
     context.log.info(f"Suma total: {resultado_diez + resultado_cinco}")
     
+    # Guardamos los resultados para que el asset final pueda leerlos
+    df_resultados.to_csv("data/resultados.csv", index=False)
     return df_resultados
 
-# Asset final que muestra los resultados
+# Definimos un grafo que conecta todas las operaciones
+@dg.graph
+def flujo_operaciones():
+    valor_inicial = leer_valor_inicial()
+    resultado_diez = sumar_diez(valor_inicial)
+    resultado_cinco = sumar_cinco(valor_inicial)
+    guardar_resultados(valor_inicial, resultado_diez, resultado_cinco)
+
+# Definimos un job a partir del grafo
+@dg.job(
+    name="job_operaciones_suma"
+)
+def job_operaciones_suma():
+    flujo_operaciones()
+
+# Asset final que lee los resultados del job
 @dg.asset(
     compute_kind="python",
     group_name="resultados",
@@ -97,53 +119,37 @@ def guardar_resultados(
     deps=["datos_iniciales"]  # Indicamos que depende del asset inicial
 )
 def resultados_finales(context: OpExecutionContext):
-    # Obtenemos el valor del asset datos_iniciales
-    # En un entorno real, esto podría hacerse con I/O managers
-    context.log.info("Procesando datos y generando resultados...")
-    
-    # Obtenemos el valor materializado del asset datos_iniciales
-    # En un entorno real, esto se puede hacer con get_asset_value_loader
-    # Para simplificar, vamos a recalcularlo
-    data = {
-        'id': [0, 1],
-        'valor': [1, 1]
-    }
-    df = pd.DataFrame(data)
-    valor_inicial = df['valor'].sum()
-    
-    # Ejecutamos las operaciones
-    resultado_diez = valor_inicial + 10
-    resultado_cinco = valor_inicial + 5
-    
-    # Creamos un DataFrame con los resultados
-    data_resultados = {
-        'operacion': ['suma_inicial', 'suma_diez', 'suma_cinco'],
-        'resultado': [valor_inicial, resultado_diez, resultado_cinco]
-    }
-    df_resultados = pd.DataFrame(data_resultados)
-    
-    # Devolvemos el resultado con metadatos
-    return dg.MaterializeResult(
-        metadata={
-            "resultados": dg.MetadataValue.md(df_resultados.to_markdown(index=False)),
-            "suma_total": dg.MetadataValue.int(resultado_diez + resultado_cinco)
+    try:
+        # Leemos los resultados guardados por el job
+        df_resultados = pd.read_csv("data/resultados.csv")
+        suma_total = int(df_resultados['resultado'].sum())
+        
+        context.log.info(f"Resultados finales leídos del archivo:\n{df_resultados}")
+        
+        return dg.MaterializeResult(
+            metadata={
+                "resultados": dg.MetadataValue.md(df_resultados.to_markdown(index=False)),
+                "suma_total": dg.MetadataValue.int(suma_total)
+            }
+        )
+    except Exception as e:
+        context.log.error(f"Error al leer los resultados: {e}")
+        
+        # Si no podemos leer los resultados, generamos unos de ejemplo
+        # Esto es solo para demostración
+        data = {
+            'operacion': ['suma_inicial', 'suma_diez', 'suma_cinco'],
+            'resultado': [2, 12, 7]
         }
-    )
-
-# Definimos un job que conecta el asset con las operaciones
-@dg.job(
-    name="job_operaciones_suma"
-)
-def job_operaciones_suma():
-    # Cargamos el valor del asset
-    valor_asset = obtener_valor_inicial(asset_valor=datos_iniciales())
-    
-    # Realizamos las operaciones
-    resultado_diez = sumar_diez(valor_asset)
-    resultado_cinco = sumar_cinco(valor_asset)
-    
-    # Guardamos los resultados
-    guardar_resultados(valor_asset, resultado_diez, resultado_cinco)
+        df_fallback = pd.DataFrame(data)
+        
+        return dg.MaterializeResult(
+            metadata={
+                "resultados": dg.MetadataValue.md(df_fallback.to_markdown(index=False)),
+                "suma_total": dg.MetadataValue.int(21),
+                "nota": dg.MetadataValue.text("Datos generados como fallback debido a un error")
+            }
+        )
 
 # Definiciones de Dagster
 defs = dg.Definitions(
