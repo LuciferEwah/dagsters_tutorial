@@ -1,158 +1,89 @@
 import dagster as dg
+from dagster import AssetMaterialization, Output, Out
 import pandas as pd
-from dagster import OpExecutionContext, asset, op, job, In, Out, graph
+import numpy as np
 
-# Asset inicial que crea un dataframe simple
-@dg.asset(
-    compute_kind="python",
-    group_name="datos_iniciales",
-    key="datos_iniciales"
-)
-def datos_iniciales():
-    # Creamos un dataframe simple con algunos números
-    data = {
-        'id': [0, 1],
-        'valor': [1, 1]
-    }
-    df = pd.DataFrame(data)
+# Define el asset inicial que crea un DataFrame
+@dg.asset
+def initial_dataframe() -> pd.DataFrame:
+    """Crea un DataFrame inicial con datos de ventas"""
+    # Crear un dataframe de ejemplo con ventas por producto
+    df = pd.DataFrame({
+        'producto': ['A', 'B', 'C', 'D', 'E'],
+        'ventas': [150, 200, 120, 300, 250],
+        'costo': [50, 80, 40, 100, 90]
+    })
+    return df
+
+# Define operación para calcular el margen
+@dg.op
+def calcular_margen(context, df: pd.DataFrame) -> pd.DataFrame:
+    """Calcula el margen de ganancia para cada producto"""
+    context.log.info(f"Calculando margen para {len(df)} productos")
     
-    # Calculamos la suma total y convertimos a int nativo de Python
-    suma_total = int(df['valor'].sum())
+    # Añadir columna de margen
+    df['margen'] = df['ventas'] - df['costo']
+    df['margen_porcentaje'] = (df['margen'] / df['ventas'] * 100).round(2)
     
-    # Guardamos el DataFrame en un archivo CSV para que puedan acceder los ops
-    df.to_csv("data/datos_iniciales.csv", index=False)
+    return df
+
+# Define operación para filtrar productos rentables
+@dg.op
+def filtrar_rentables(context, df: pd.DataFrame) -> pd.DataFrame:
+    """Filtra productos con margen mayor al 50%"""
+    context.log.info(f"Filtrando productos rentables")
     
-    # Devolvemos el resultado con metadatos
-    return dg.MaterializeResult(
+    df_rentable = df[df['margen_porcentaje'] > 50].copy()
+    context.log.info(f"Encontrados {len(df_rentable)} productos rentables")
+    
+    return df_rentable
+
+
+
+
+# Define el op final que materializa el DataFrame como asset
+@dg.op(out={"result": Out(is_required=False)})
+def materializar_resultados(context, df: pd.DataFrame):
+    """Materializa el DataFrame de resultados como un asset"""
+    context.log.info(f"Materializando resultados para {len(df)} productos")
+    
+    # Calcular métricas generales
+    promedio_margen = df['margen'].mean()
+    total_ventas = df['ventas'].sum()
+    
+    # Materializar el asset con metadatos - convertir valores NumPy a Python nativos
+    yield AssetMaterialization(
+        asset_key="productos_rentables",
+        description="DataFrame con productos rentables",
         metadata={
-            "row_count": dg.MetadataValue.int(len(df)),
-            "preview": dg.MetadataValue.md(df.to_markdown(index=False)),
-            "suma_total": dg.MetadataValue.int(suma_total)
+            "cantidad_productos": int(len(df)),
+            "promedio_margen": float(promedio_margen),
+            "total_ventas": float(total_ventas)
         }
     )
-
-# Operación para leer el valor del asset desde el archivo
-@dg.op(
-    name="leer_valor_inicial",
-    out=Out(int)
-)
-def leer_valor_inicial(context: OpExecutionContext):
-
-    df = pd.read_csv("data/datos_iniciales.csv")
-    valor = int(df['valor'].sum())
-    context.log.info(f"Valor leído del CSV: {valor}")
-    return valor
-
-
-# Operación que suma diez al valor
-@dg.op(
-    name="sumar_diez",
-    ins={"valor": In(int)},
-    out=Out(int)
-)
-def sumar_diez(context: OpExecutionContext, valor: int) -> int:
-    resultado = valor + 10
-    context.log.info(f"Sumando 10 al valor {valor}: {resultado}")
-    return resultado
-
-# Operación que suma cinco al valor
-@dg.op(
-    name="sumar_cinco",
-    ins={"valor": In(int)},
-    out=Out(int)
-)
-def sumar_cinco(context: OpExecutionContext, valor: int) -> int:
-    resultado = valor + 5
-    context.log.info(f"Sumando 5 al valor {valor}: {resultado}")
-    return resultado
-
-# Operación final que guarda los resultados
-@dg.op(
-    name="guardar_resultados",
-    ins={
-        "valor_inicial": In(int),
-        "resultado_diez": In(int),
-        "resultado_cinco": In(int)
-    }
-)
-def guardar_resultados(
-    context: OpExecutionContext,
-    valor_inicial: int,
-    resultado_diez: int,
-    resultado_cinco: int
-):
-    # Creamos un DataFrame con los resultados
-    data = {
-        'operacion': ['suma_inicial', 'suma_diez', 'suma_cinco'],
-        'resultado': [valor_inicial, resultado_diez, resultado_cinco]
-    }
-    df_resultados = pd.DataFrame(data)
     
-    # Mostramos los resultados
-    context.log.info(f"Resultados finales:\n{df_resultados}")
-    context.log.info(f"Suma total: {resultado_diez + resultado_cinco}")
-    
-    # Guardamos los resultados para que el asset final pueda leerlos
-    df_resultados.to_csv("data/resultados.csv", index=False)
-    return df_resultados
+    # También puedes retornar el DataFrame si es necesario
+    yield Output(df, output_name="result")
 
-# Definimos un grafo que conecta todas las operaciones
-@dg.graph
-def flujo_operaciones():
-    valor_inicial = leer_valor_inicial()
-    resultado_diez = sumar_diez(valor_inicial)
-    resultado_cinco = sumar_cinco(valor_inicial)
-    guardar_resultados(valor_inicial, resultado_diez, resultado_cinco)
 
-# Definimos un job a partir del grafo
-@dg.job(
-    name="job_operaciones_suma"
-)
-def job_operaciones_suma():
-    flujo_operaciones()
+# Define el asset inicial que crea un DataFrame
+@dg.asset
+def final_dataframe(context, df: pd.DataFrame) -> None:
+    """Crea un DataFrame inicial con datos de ventas"""
+    context.log.info(f"Materializando largo de df: {df}")
+    return None
 
-# Asset final que lee los resultados del job
-@dg.asset(
-    compute_kind="python",
-    group_name="resultados",
-    key="resultados_finales",
-    deps=["datos_iniciales"]  # Indicamos que depende del asset inicial
-)
-def resultados_finales(context: OpExecutionContext):
-    try:
-        # Leemos los resultados guardados por el job
-        df_resultados = pd.read_csv("data/resultados.csv")
-        suma_total = int(df_resultados['resultado'].sum())
-        
-        context.log.info(f"Resultados finales leídos del archivo:\n{df_resultados}")
-        
-        return dg.MaterializeResult(
-            metadata={
-                "resultados": dg.MetadataValue.md(df_resultados.to_markdown(index=False)),
-                "suma_total": dg.MetadataValue.int(suma_total)
-            }
-        )
-    except Exception as e:
-        context.log.error(f"Error al leer los resultados: {e}")
-        
-        # Si no podemos leer los resultados, generamos unos de ejemplo
-        # Esto es solo para demostración
-        data = {
-            'operacion': ['suma_inicial', 'suma_diez', 'suma_cinco'],
-            'resultado': [2, 12, 7]
-        }
-        df_fallback = pd.DataFrame(data)
-        
-        return dg.MaterializeResult(
-            metadata={
-                "resultados": dg.MetadataValue.md(df_fallback.to_markdown(index=False)),
-                "suma_total": dg.MetadataValue.int(21),
-                "nota": dg.MetadataValue.text("Datos generados como fallback debido a un error")
-            }
-        )
+# Define el job que conecta todo el pipeline
+@dg.job
+def analisis_ventas_job():
+    df_inicial = initial_dataframe()
+    df_con_margen = calcular_margen(df_inicial)
+    df_rentable = filtrar_rentables(df_con_margen)
+    materializar = materializar_resultados(df_rentable)
+    final_dataframe(materializar)
 
 # Definiciones de Dagster
 defs = dg.Definitions(
-    assets=[datos_iniciales, resultados_finales],
-    jobs=[job_operaciones_suma]
+    assets=[initial_dataframe],
+    jobs=[analisis_ventas_job]
 )
