@@ -155,183 +155,183 @@ def new_job():
 
 import dagster as dg
 from datetime import datetime, timedelta
-
 @dg.run_status_sensor(
     run_status=dg.DagsterRunStatus.SUCCESS,
     monitored_jobs=[new_job],
     default_status=dg.DefaultSensorStatus.RUNNING,
 )
-def sensor_de_exito_detallado(context):
+def sensor_tiempos_detallados(context):
     run = context.dagster_run
     
     if not run:
         context.log.info("No se encontró información de la ejecución")
         return None
     
-    # Información básica
-    context.log.info("=" * 80)
-    context.log.info("DETALLES DE LA EJECUCIÓN EXITOSA".center(80))
-    context.log.info("=" * 80)
-    
-    # Sección 1: Información principal
-    context.log.info("\n📋 INFORMACIÓN GENERAL")
-    context.log.info("-" * 80)
-    context.log.info(f"Job:                  {run.job_name}")
-    context.log.info(f"Run ID:               {run.run_id}")
-    context.log.info(f"Estado:               {run.status}")
-    context.log.info(f"Snapshot ID (Job):    {run.job_snapshot_id}")
-    context.log.info(f"Snapshot ID (Plan):   {run.execution_plan_snapshot_id}")
-    
-    # Sección 2: Tiempos de ejecución
-    if hasattr(run, 'start_time') and run.start_time:
-        start_time = datetime.fromtimestamp(run.start_time)
-        context.log.info(f"\n⏱️ TIEMPO DE EJECUCIÓN")
-        context.log.info("-" * 80)
-        context.log.info(f"Inicio:               {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        if hasattr(run, 'end_time') and run.end_time:
-            end_time = datetime.fromtimestamp(run.end_time)
-            duracion = timedelta(seconds=run.end_time - run.start_time)
-            context.log.info(f"Fin:                  {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            context.log.info(f"Duración:             {duracion}")
-    
-    # Sección 3: Pasos ejecutados
-    if hasattr(run, 'step_keys_to_execute') and run.step_keys_to_execute:
-        context.log.info(f"\n🔄 FLUJO DE EJECUCIÓN ({len(run.step_keys_to_execute)} pasos)")
-        context.log.info("-" * 80)
-        for i, step in enumerate(run.step_keys_to_execute, 1):
-            context.log.info(f"  {i}. {step}")
-    
-    # Sección 4: Tags y metadatos
-    if hasattr(run, 'tags') and run.tags:
-        context.log.info(f"\n🏷️ TAGS ({len(run.tags)} tags)")
-        context.log.info("-" * 80)
-        for key, value in run.tags.items():
-            # Si parece ser JSON, intenta formatearlo mejor
-            if isinstance(value, str) and value.startswith('{') and value.endswith('}'):
-                try:
-                    import json
-                    parsed = json.loads(value)
-                    context.log.info(f"  {key}:")
-                    formatted = json.dumps(parsed, indent=4)
-                    for line in formatted.split('\n'):
-                        context.log.info(f"    {line}")
-                except:
-                    context.log.info(f"  {key}: {value}")
-            else:
-                context.log.info(f"  {key}: {value}")
-    
-    # Sección 5: Eventos (usando los parámetros correctos)
     try:
-        context.log.info(f"\n📊 EVENTOS")
-        context.log.info("-" * 80)
+        context.log.info("=" * 80)
+        context.log.info("ANÁLISIS DE TIEMPOS DE EJECUCIÓN".center(80))
+        context.log.info("=" * 80)
         
-        # Obtener los logs para esta ejecución
-        logs = context.instance.get_logs_for_run(run.run_id)
-        
-        if logs:
-            context.log.info(f"Total de logs: {len(logs)}")
-            
-            # Contar eventos por tipo
-            event_types = {}
-            for log in logs:
-                if hasattr(log, 'dagster_event') and log.dagster_event:
-                    event_type = log.dagster_event.event_type.value
-                    event_types[event_type] = event_types.get(event_type, 0) + 1
-            
-            if event_types:
-                context.log.info("\nResumen de eventos:")
-                for event_type, count in sorted(event_types.items(), key=lambda x: -x[1]):
-                    context.log.info(f"  {event_type}: {count}")
-        else:
-            context.log.info("No se encontraron logs para esta ejecución")
-    except Exception as e:
-        context.log.error(f"Error al obtener logs: {str(e)}")
-    
-    # Sección 6: Ejecuciones recientes
-    try:
-        context.log.info(f"\n📈 EJECUCIONES RECIENTES")
-        context.log.info("-" * 80)
-        
-        # Obtener ejecuciones recientes
-        runs = context.instance.get_runs(
-            filters=dg.RunsFilter(job_name=run.job_name),
-            limit=5
+        # Obtener eventos STEP_START y STEP_SUCCESS
+        start_events = context.instance.get_records_for_run(
+            run_id=run.run_id, 
+            of_type=dg.DagsterEventType.STEP_START
         )
         
-        if runs:
-            context.log.info(f"Últimas {len(runs)} ejecuciones del job '{run.job_name}':")
-            context.log.info(f"{'ID':<12} | {'ESTADO':<10} | {'INICIO':<19} | {'FIN':<19} | {'DURACIÓN':<12}")
-            context.log.info("-" * 80)
+        success_events = context.instance.get_records_for_run(
+            run_id=run.run_id, 
+            of_type=dg.DagsterEventType.STEP_SUCCESS
+        )
+        
+        # Extraer información de tiempos
+        step_times = {}
+        
+        # Procesar eventos de inicio
+        for event in start_events:
+            if hasattr(event, 'event_log_entry') and event.event_log_entry:
+                entry = event.event_log_entry
+                if (hasattr(entry, 'dagster_event') and entry.dagster_event and
+                    hasattr(entry.dagster_event, 'step_key') and entry.dagster_event.step_key):
+                    
+                    step_key = entry.dagster_event.step_key
+                    timestamp = entry.timestamp
+                    
+                    if step_key not in step_times:
+                        step_times[step_key] = {}
+                    
+                    step_times[step_key]['start'] = timestamp
+        
+        # Procesar eventos de finalización
+        for event in success_events:
+            if hasattr(event, 'event_log_entry') and event.event_log_entry:
+                entry = event.event_log_entry
+                if (hasattr(entry, 'dagster_event') and entry.dagster_event and
+                    hasattr(entry.dagster_event, 'step_key') and entry.dagster_event.step_key):
+                    
+                    step_key = entry.dagster_event.step_key
+                    timestamp = entry.timestamp
+                    
+                    if step_key not in step_times:
+                        step_times[step_key] = {}
+                    
+                    step_times[step_key]['end'] = timestamp
+                    
+                    # Extraer duración desde el evento directamente
+                    if (hasattr(entry.dagster_event, 'event_specific_data') and
+                        hasattr(entry.dagster_event.event_specific_data, 'duration_ms')):
+                        step_times[step_key]['duration_ms'] = entry.dagster_event.event_specific_data.duration_ms
+        
+        # Mostrar tiempos de ejecución
+        if step_times:
+            # Ordenar pasos en el orden de ejecución
+            ordered_steps = []
+            for step_key in ["seed_value", 
+                            "my_parallel_graph.op_a", 
+                            "my_parallel_graph.op_b", 
+                            "my_parallel_graph.op_c", 
+                            "my_parallel_graph.sum_op", 
+                            "print_valor"]:
+                if step_key in step_times:
+                    ordered_steps.append(step_key)
             
-            for run_item in runs:
+            # Añadir cualquier otro paso que no esté en la lista predefinida
+            for step_key in step_times:
+                if step_key not in ordered_steps:
+                    ordered_steps.append(step_key)
+            
+            context.log.info("\nTiempos de ejecución por paso:")
+            context.log.info(f"{'PASO':<30} | {'INICIO':<20} | {'FIN':<20} | {'DURACIÓN':<12} | {'TIEMPO REAL'}")
+            context.log.info("-" * 100)
+            
+            # Variables para calcular tiempo total
+            first_timestamp = None
+            last_timestamp = None
+            
+            for step_key in ordered_steps:
+                times = step_times[step_key]
                 start_str = "N/A"
                 end_str = "N/A"
                 duration_str = "N/A"
+                duration_ms_str = "N/A"
                 
-                if hasattr(run_item, 'start_time') and run_item.start_time:
-                    start_str = datetime.fromtimestamp(run_item.start_time).strftime('%Y-%m-%d %H:%M:%S')
-                
-                if hasattr(run_item, 'end_time') and run_item.end_time:
-                    end_str = datetime.fromtimestamp(run_item.end_time).strftime('%Y-%m-%d %H:%M:%S')
-                
-                if hasattr(run_item, 'start_time') and run_item.start_time and hasattr(run_item, 'end_time') and run_item.end_time:
-                    duration = timedelta(seconds=run_item.end_time - run_item.start_time)
-                    duration_str = str(duration)
-                
-                run_id_short = run_item.run_id[:10]
-                context.log.info(f"{run_id_short:<12} | {run_item.status.value:<10} | {start_str:<19} | {end_str:<19} | {duration_str:<12}")
-        else:
-            context.log.info(f"No se encontraron ejecuciones recientes para el job '{run.job_name}'")
-    except Exception as e:
-        context.log.error(f"Error al obtener ejecuciones recientes: {str(e)}")
-    
-    # Sección 7: Origen del código
-    try:
-        context.log.info(f"\n📂 ORIGEN DEL CÓDIGO")
-        context.log.info("-" * 80)
-        
-        if hasattr(run, 'job_code_origin') and run.job_code_origin:
-            origin = run.job_code_origin
-            context.log.info(f"Job: {getattr(origin, 'job_name', 'N/A')}")
-            
-            if hasattr(origin, 'repository_origin') and origin.repository_origin:
-                repo_origin = origin.repository_origin
-                context.log.info(f"Ejecutable: {getattr(repo_origin, 'executable_path', 'N/A')}")
-                
-                if hasattr(repo_origin, 'code_pointer') and repo_origin.code_pointer:
-                    code_pointer = repo_origin.code_pointer
-                    context.log.info(f"Módulo: {getattr(code_pointer, 'module', 'N/A')}")
-                    context.log.info(f"Función: {getattr(code_pointer, 'fn_name', 'N/A')}")
-                    context.log.info(f"Directorio: {getattr(code_pointer, 'working_directory', 'N/A')}")
-        
-        if hasattr(run, 'remote_job_origin') and run.remote_job_origin:
-            remote_origin = run.remote_job_origin
-            context.log.info(f"\nOrigen remoto:")
-            
-            if hasattr(remote_origin, 'repository_origin') and remote_origin.repository_origin:
-                repo_origin = remote_origin.repository_origin
-                
-                if hasattr(repo_origin, 'code_location_origin') and repo_origin.code_location_origin:
-                    location = repo_origin.code_location_origin
-                    context.log.info(f"Ubicación: {getattr(location, 'location_name', 'N/A')}")
-                    context.log.info(f"Host: {getattr(location, 'host', 'N/A')}")
-                    context.log.info(f"Puerto: {getattr(location, 'port', 'N/A')}")
+                if 'start' in times:
+                    start_time = times['start']
+                    start_dt = datetime.fromtimestamp(start_time)
+                    start_str = start_dt.strftime('%H:%M:%S.%f')[:-3]
                     
-                    if hasattr(location, 'additional_metadata') and location.additional_metadata:
-                        meta = location.additional_metadata
-                        for key, value in meta.items():
-                            context.log.info(f"  {key}: {value}")
+                    # Actualizar primer timestamp
+                    if first_timestamp is None or start_time < first_timestamp:
+                        first_timestamp = start_time
+                
+                if 'end' in times:
+                    end_time = times['end']
+                    end_dt = datetime.fromtimestamp(end_time)
+                    end_str = end_dt.strftime('%H:%M:%S.%f')[:-3]
+                    
+                    # Actualizar último timestamp
+                    if last_timestamp is None or end_time > last_timestamp:
+                        last_timestamp = end_time
+                    
+                    if 'start' in times:
+                        duration = end_time - times['start']
+                        duration_str = f"{duration:.3f}s"
+                
+                if 'duration_ms' in times:
+                    duration_ms_str = f"{times['duration_ms']:.2f}ms"
+                
+                context.log.info(f"{step_key:<30} | {start_str:<20} | {end_str:<20} | {duration_str:<12} | {duration_ms_str}")
+            
+            # Mostrar duración total
+            if first_timestamp and last_timestamp:
+                total_duration = last_timestamp - first_timestamp
+                context.log.info("-" * 100)
+                context.log.info(f"{'TIEMPO TOTAL':<30} | {datetime.fromtimestamp(first_timestamp).strftime('%H:%M:%S.%f')[:-3]:<20} | {datetime.fromtimestamp(last_timestamp).strftime('%H:%M:%S.%f')[:-3]:<20} | {total_duration:.3f}s")
+        
+        # Buscar mensajes de log específicos
+        all_records = context.instance.get_records_for_run(run_id=run.run_id)
+        
+        info_messages = []
+        for record in all_records:
+            if hasattr(record, 'event_log_entry') and record.event_log_entry:
+                entry = record.event_log_entry
+                
+                if hasattr(entry, 'message') and entry.message and hasattr(entry, 'timestamp'):
+                    if any(pattern in entry.message for pattern in [
+                        "Generando valor semilla", 
+                        "modificó a", 
+                        "Sumando valores", 
+                        "Valor:"
+                    ]):
+                        info_messages.append({
+                            'timestamp': entry.timestamp,
+                            'message': entry.message
+                        })
+        
+        if info_messages:
+            # Ordenar por timestamp
+            info_messages.sort(key=lambda x: x['timestamp'])
+            
+            context.log.info("\nMensajes de log de operaciones:")
+            context.log.info(f"{'TIMESTAMP':<20} | {'MENSAJE'}")
+            context.log.info("-" * 80)
+            
+            for msg in info_messages:
+                timestamp_dt = datetime.fromtimestamp(msg['timestamp'])
+                timestamp_str = timestamp_dt.strftime('%H:%M:%S.%f')[:-3]
+                
+                context.log.info(f"{timestamp_str:<20} | {msg['message']}")
+        
+        context.log.info("=" * 80)
+        
     except Exception as e:
-        context.log.error(f"Error al obtener origen del código: {str(e)}")
-    
-    context.log.info("=" * 80)
+        context.log.error(f"Error: {str(e)}")
+        import traceback
+        context.log.error(traceback.format_exc())
     
     return None
-    
 # Definiciones de Dagster
 defs = dg.Definitions(
     assets=[initial_dataframe, productos_procesados, final_dataframe],
     jobs=[analisis_ventas_job, new_job],
-    sensors=[sensor_de_exito_detallado]
+    sensors=[sensor_tiempos_detallados]
 )
