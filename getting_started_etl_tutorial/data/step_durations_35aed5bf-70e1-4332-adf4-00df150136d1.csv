@@ -1,0 +1,8 @@
+Step,Duration (s)
+my_parallel_graph.op_a,0.028
+my_parallel_graph.op_b,0.026
+my_parallel_graph.op_c,0.0388
+my_parallel_graph.sum_op,0.0473
+my_parallel_graph.sum_op,0.0342
+my_parallel_graph.sum_op,0.0216
+print_valor,0.0332

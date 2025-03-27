@@ -83,12 +83,12 @@ def op_b(context, seed_value):
     return modified_value
 
 @dg.op
-def op_c(context, seed_value):
+def op_c(context, seed_value: int):
     modified_value = seed_value // 2
     context.log.info(f"op_c modificó a: {modified_value}")
     return modified_value
 @dg.op
-def sum_op(context, a, b, c):
+def sum_op(context, a, b, c) -> int:
     context.log.info(f"Sumando valores: {a}, {b}, {c}")
     return a + b + c
 # Definir un grafo que organiza la ejecución
@@ -97,10 +97,11 @@ def my_parallel_graph(asset_init_retorna):
     a = op_a(asset_init_retorna)
     b = op_b(asset_init_retorna)
     c = op_c(asset_init_retorna)
+    
     return sum_op(a, b, c)
 
 @dg.asset
-def print_valor(context, valor: int):
+def print_valor(context, valor: int) -> int:
     context.log.info(f"Valor: {valor}")
     return valor
 
@@ -155,12 +156,21 @@ def new_job():
 
 import dagster as dg
 from datetime import datetime, timedelta
+import dagster as dg
+import pandas as pd
+import re
+
+import dagster as dg
+import pandas as pd
+import re
+from datetime import datetime
+
 @dg.run_status_sensor(
     run_status=dg.DagsterRunStatus.SUCCESS,
     monitored_jobs=[new_job],
     default_status=dg.DefaultSensorStatus.RUNNING,
 )
-def sensor_tiempos_detallados(context):
+def sensor_analisis_detallado(context):
     run = context.dagster_run
     
     if not run:
@@ -168,170 +178,227 @@ def sensor_tiempos_detallados(context):
         return None
     
     try:
-        context.log.info("=" * 80)
-        context.log.info("ANÁLISIS DE TIEMPOS DE EJECUCIÓN".center(80))
-        context.log.info("=" * 80)
-        
-        # Obtener eventos STEP_START y STEP_SUCCESS
-        start_events = context.instance.get_records_for_run(
+        # Eventos del Motor para obtener tiempo total de ejecución
+        engine_events = context.instance.get_records_for_run(
             run_id=run.run_id, 
-            of_type=dg.DagsterEventType.STEP_START
+            of_type={dg.DagsterEventType.ENGINE_EVENT}
         )
         
-        success_events = context.instance.get_records_for_run(
+        # Extraer tiempo total de ejecución
+        total_duration = None
+        for event in engine_events.records:
+            if "exiting" in event.event_log_entry.message:
+                match = re.search(r'after ([\d.]+)s', event.event_log_entry.message)
+                if match:
+                    total_duration = float(match.group(1))
+                    break
+
+        # Preparar contenedores para DataFrames
+        input_data = []
+        output_data = []
+        failure_data = []
+        step_duration_data = []
+
+        # Obtener eventos de entrada
+        input_events = context.instance.get_records_for_run(
             run_id=run.run_id, 
-            of_type=dg.DagsterEventType.STEP_SUCCESS
+            of_type={dg.DagsterEventType.STEP_INPUT}
         )
         
-        # Extraer información de tiempos
-        step_times = {}
+        # Obtener eventos de salida para cálculo de duraciones
+        output_events = context.instance.get_records_for_run(
+            run_id=run.run_id, 
+            of_type={dg.DagsterEventType.STEP_OUTPUT}
+        )
+
+        # Crear un diccionario de tiempos de salida de pasos
+        output_times = {
+            event.event_log_entry.step_key: event.event_log_entry.timestamp
+            for event in output_events.records
+        }
+
+        # Recopilar datos de eventos de entrada con cálculo de duración
+        for event in input_events.records:
+            entry = event.event_log_entry
+            step_key = entry.step_key
+            input_timestamp = entry.timestamp
+
+            # Calcular duración del paso
+            output_timestamp = output_times.get(step_key)
+            duration = output_timestamp - input_timestamp if output_timestamp else None
+
+            input_data.append({
+                'Step': step_key,
+                'Input Name': entry.dagster_event.event_specific_data.input_name,
+                'Type_': entry.user_message,  # Esto mostrará el mensaje original,
+                'Type': entry.dagster_event.event_specific_data.type_check_data.label,
+                'Type Check': '✅ Passed' if entry.dagster_event.event_specific_data.type_check_data.success else '❌ Failed'
+            })
+
+            # Recopilar datos de duración de pasos
+            if duration is not None:
+                step_duration_data.append({
+                    'Step': step_key,
+                    'Duration (s)': round(duration, 4)
+                })
         
-        # Procesar eventos de inicio
-        for event in start_events:
-            if hasattr(event, 'event_log_entry') and event.event_log_entry:
-                entry = event.event_log_entry
-                if (hasattr(entry, 'dagster_event') and entry.dagster_event and
-                    hasattr(entry.dagster_event, 'step_key') and entry.dagster_event.step_key):
-                    
-                    step_key = entry.dagster_event.step_key
-                    timestamp = entry.timestamp
-                    
-                    if step_key not in step_times:
-                        step_times[step_key] = {}
-                    
-                    step_times[step_key]['start'] = timestamp
-        
-        # Procesar eventos de finalización
-        for event in success_events:
-            if hasattr(event, 'event_log_entry') and event.event_log_entry:
-                entry = event.event_log_entry
-                if (hasattr(entry, 'dagster_event') and entry.dagster_event and
-                    hasattr(entry.dagster_event, 'step_key') and entry.dagster_event.step_key):
-                    
-                    step_key = entry.dagster_event.step_key
-                    timestamp = entry.timestamp
-                    
-                    if step_key not in step_times:
-                        step_times[step_key] = {}
-                    
-                    step_times[step_key]['end'] = timestamp
-                    
-                    # Extraer duración desde el evento directamente
-                    if (hasattr(entry.dagster_event, 'event_specific_data') and
-                        hasattr(entry.dagster_event.event_specific_data, 'duration_ms')):
-                        step_times[step_key]['duration_ms'] = entry.dagster_event.event_specific_data.duration_ms
-        
-        # Mostrar tiempos de ejecución
-        if step_times:
-            # Ordenar pasos en el orden de ejecución
-            ordered_steps = []
-            for step_key in ["seed_value", 
-                            "my_parallel_graph.op_a", 
-                            "my_parallel_graph.op_b", 
-                            "my_parallel_graph.op_c", 
-                            "my_parallel_graph.sum_op", 
-                            "print_valor"]:
-                if step_key in step_times:
-                    ordered_steps.append(step_key)
-            
-            # Añadir cualquier otro paso que no esté en la lista predefinida
-            for step_key in step_times:
-                if step_key not in ordered_steps:
-                    ordered_steps.append(step_key)
-            
-            context.log.info("\nTiempos de ejecución por paso:")
-            context.log.info(f"{'PASO':<30} | {'INICIO':<20} | {'FIN':<20} | {'DURACIÓN':<12} | {'TIEMPO REAL'}")
-            context.log.info("-" * 100)
-            
-            # Variables para calcular tiempo total
-            first_timestamp = None
-            last_timestamp = None
-            
-            for step_key in ordered_steps:
-                times = step_times[step_key]
-                start_str = "N/A"
-                end_str = "N/A"
-                duration_str = "N/A"
-                duration_ms_str = "N/A"
-                
-                if 'start' in times:
-                    start_time = times['start']
-                    start_dt = datetime.fromtimestamp(start_time)
-                    start_str = start_dt.strftime('%H:%M:%S.%f')[:-3]
-                    
-                    # Actualizar primer timestamp
-                    if first_timestamp is None or start_time < first_timestamp:
-                        first_timestamp = start_time
-                
-                if 'end' in times:
-                    end_time = times['end']
-                    end_dt = datetime.fromtimestamp(end_time)
-                    end_str = end_dt.strftime('%H:%M:%S.%f')[:-3]
-                    
-                    # Actualizar último timestamp
-                    if last_timestamp is None or end_time > last_timestamp:
-                        last_timestamp = end_time
-                    
-                    if 'start' in times:
-                        duration = end_time - times['start']
-                        duration_str = f"{duration:.3f}s"
-                
-                if 'duration_ms' in times:
-                    duration_ms_str = f"{times['duration_ms']:.2f}ms"
-                
-                context.log.info(f"{step_key:<30} | {start_str:<20} | {end_str:<20} | {duration_str:<12} | {duration_ms_str}")
-            
-            # Mostrar duración total
-            if first_timestamp and last_timestamp:
-                total_duration = last_timestamp - first_timestamp
-                context.log.info("-" * 100)
-                context.log.info(f"{'TIEMPO TOTAL':<30} | {datetime.fromtimestamp(first_timestamp).strftime('%H:%M:%S.%f')[:-3]:<20} | {datetime.fromtimestamp(last_timestamp).strftime('%H:%M:%S.%f')[:-3]:<20} | {total_duration:.3f}s")
-        
-        # Buscar mensajes de log específicos
-        all_records = context.instance.get_records_for_run(run_id=run.run_id)
-        
-        info_messages = []
-        for record in all_records:
-            if hasattr(record, 'event_log_entry') and record.event_log_entry:
-                entry = record.event_log_entry
-                
-                if hasattr(entry, 'message') and entry.message and hasattr(entry, 'timestamp'):
-                    if any(pattern in entry.message for pattern in [
-                        "Generando valor semilla", 
-                        "modificó a", 
-                        "Sumando valores", 
-                        "Valor:"
-                    ]):
-                        info_messages.append({
-                            'timestamp': entry.timestamp,
-                            'message': entry.message
-                        })
-        
-        if info_messages:
-            # Ordenar por timestamp
-            info_messages.sort(key=lambda x: x['timestamp'])
-            
-            context.log.info("\nMensajes de log de operaciones:")
-            context.log.info(f"{'TIMESTAMP':<20} | {'MENSAJE'}")
-            context.log.info("-" * 80)
-            
-            for msg in info_messages:
-                timestamp_dt = datetime.fromtimestamp(msg['timestamp'])
-                timestamp_str = timestamp_dt.strftime('%H:%M:%S.%f')[:-3]
-                
-                context.log.info(f"{timestamp_str:<20} | {msg['message']}")
-        
-        context.log.info("=" * 80)
-        
+        # Recopilar datos de eventos de salida
+        for event in output_events.records:
+            entry = event.event_log_entry
+            output_data.append({
+                'Step': entry.step_key,
+                'Output Name': entry.dagster_event.event_specific_data.step_output_handle.output_name,
+                'Type_': entry.user_message,  # Mensaje original con el tipo
+                'Type': entry.dagster_event.event_specific_data.type_check_data.label,
+                'Type Check': '✅ Passed' if entry.dagster_event.event_specific_data.type_check_data.success else '❌ Failed'
+            })
+
+
+        # Convertir a DataFrames
+        df_input = pd.DataFrame(input_data) if input_data else pd.DataFrame()
+        df_output = pd.DataFrame(output_data) if output_data else pd.DataFrame()
+        df_failure = pd.DataFrame(failure_data) if failure_data else pd.DataFrame()
+        df_step_duration = pd.DataFrame(step_duration_data) if step_duration_data else pd.DataFrame()
+
+        # Imprimir información del run
+        context.log.info(f"Run ID: {run.run_id}")
+        context.log.info(f"Job Name: {run.job_name}")
+        context.log.info(f"Total Job Duration: {total_duration} seconds")
+
+        # Imprimir DataFrames
+        if not df_input.empty:
+            context.log.info("\n📥 EVENTOS DE ENTRADA:")
+            context.log.info(df_input.to_string(index=False))
+
+        if not df_output.empty:
+            context.log.info("\n📤 EVENTOS DE SALIDA:")
+            context.log.info(df_output.to_string(index=False))
+
+        if not df_step_duration.empty:
+            context.log.info("\n⏱️ DURACIÓN DE PASOS:")
+            context.log.info(df_step_duration.to_string(index=False))
+
+        if not df_failure.empty:
+            context.log.info("\n❌ EVENTOS DE FALLA:")
+            context.log.info(df_failure.to_string(index=False))
+
     except Exception as e:
-        context.log.error(f"Error: {str(e)}")
+        context.log.error(f"Error en el análisis: {str(e)}")
         import traceback
         context.log.error(traceback.format_exc())
     
     return None
+
+
+import pandas as pd
+import dagster as dg
+import re
+
+@dg.run_status_sensor(
+    run_status=dg.DagsterRunStatus.FAILURE,
+    monitored_jobs=[new_job],
+    default_status=dg.DefaultSensorStatus.RUNNING,
+)
+def sensor_tiempos_error_df(context):
+    run = context.dagster_run
+    
+    if not run:
+        context.log.info("No se encontró información de la ejecución")
+        return None
+    
+    try:
+        # Preparar listas para el DataFrame
+        errores = []
+        
+        # Obtener eventos de falla
+        failure_events = context.instance.get_records_for_run(
+            run_id=run.run_id, 
+            of_type={dg.DagsterEventType.STEP_FAILURE}
+        )
+        
+        context.log.info("=" * 80)
+        context.log.info("ANÁLISIS DETALLADO DE ERROR".center(80))
+        context.log.info("=" * 80)
+        
+        # Información básica del run
+        run_id = run.run_id
+        job_name = run.job_name
+        
+        # Analizar eventos de falla
+        for event in failure_events.records:
+            error_info = event.event_log_entry.dagster_event.event_specific_data.error
+            
+            # Extraer detalles del error
+            if error_info and error_info.cause:
+                # Obtener el paso donde ocurrió el error
+                step_key = event.event_log_entry.step_key
+                
+                # Inicializar variables
+                error_location = None
+                error_message = error_info.cause.message.strip() if error_info.cause.message else "No disponible"
+                error_code = error_info.cause.message.split(':')[-1].strip() if error_info.cause.message else "No disponible"
+                
+                # Ubicación del Error
+                error_stack = error_info.cause.stack
+                if error_stack:
+                    # Buscar la línea de código específica
+                    for line in error_stack:
+                        if 'definitions.py' in line and 'line' in line:
+                            error_location = line.strip()
+                            break
+                
+                # Intentar extraer el número de línea con regex
+                linea_num = None
+                if error_location:
+                    match = re.search(r'line (\d+)', error_location)
+                    if match:
+                        linea_num = int(match.group(1))
+                
+                # Compilar información para el dataframe
+                error_data = {
+                    'run_id': run_id,
+                    'job_name': job_name,
+                    'step_key': step_key,
+                    'error_location': error_location,
+                    'linea_num': linea_num,
+                    'error_message': error_message,
+                    'error_code': error_code,
+                    'timestamp': event.event_log_entry.timestamp
+                }
+                
+                errores.append(error_data)
+        
+        # Crear DataFrame
+        if errores:
+            df_errores = pd.DataFrame(errores)
+            
+            # Convertir timestamp a datetime
+            df_errores['timestamp'] = pd.to_datetime(df_errores['timestamp'], unit='s')
+            
+            # Ordenar por timestamp
+            df_errores = df_errores.sort_values('timestamp')
+            
+            # Mostrar DataFrame
+            context.log.info("\n📊 DataFrame de Errores:")
+            context.log.info(f"\n{df_errores.to_string()}")
+            
+            # Guardar DataFrame (opcional)
+            # df_errores.to_csv(f"errores_{run_id}.csv", index=False)
+            
+            return None
+        else:
+            context.log.info("No se encontraron errores para analizar")
+            return None
+    
+    except Exception as e:
+        context.log.error(f"Error en el análisis: {str(e)}")
+        import traceback
+        context.log.error(traceback.format_exc())
+        return None
+
 # Definiciones de Dagster
 defs = dg.Definitions(
     assets=[initial_dataframe, productos_procesados, final_dataframe],
     jobs=[analisis_ventas_job, new_job],
-    sensors=[sensor_tiempos_detallados]
+    sensors=[sensor_tiempos_error_df,sensor_analisis_detallado]
 )
